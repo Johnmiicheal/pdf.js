@@ -99,8 +99,9 @@ class PDFPresentationMode {
 
     try {
       await promise;
+      pdfViewer.focus(); // Fixes bug 1787456.
       return true;
-    } catch (reason) {
+    } catch {
       this.#removeFullscreenChangeListeners();
       this.#notifyStateChange(PresentationModeState.NORMAL);
     }
@@ -174,7 +175,9 @@ class PDFPresentationMode {
       this.pdfViewer.currentScaleValue = "page-fit";
 
       if (this.#args.annotationEditorMode !== null) {
-        this.pdfViewer.annotationEditorMode = AnnotationEditorType.NONE;
+        this.pdfViewer.annotationEditorMode = {
+          mode: AnnotationEditorType.NONE,
+        };
       }
     }, 0);
 
@@ -206,7 +209,9 @@ class PDFPresentationMode {
       this.pdfViewer.currentPageNumber = pageNumber;
 
       if (this.#args.annotationEditorMode !== null) {
-        this.pdfViewer.annotationEditorMode = this.#args.annotationEditorMode;
+        this.pdfViewer.annotationEditorMode = {
+          mode: this.#args.annotationEditorMode,
+        };
       }
       this.#args = null;
     }, 0);
@@ -223,21 +228,24 @@ class PDFPresentationMode {
       evt.preventDefault();
       return;
     }
-    if (evt.button === 0) {
-      // Enable clicking of links in presentation mode. Note: only links
-      // pointing to destinations in the current PDF document work.
-      const isInternalLink =
-        evt.target.href && evt.target.classList.contains("internalLink");
-      if (!isInternalLink) {
-        // Unless an internal link was clicked, advance one page.
-        evt.preventDefault();
+    if (evt.button !== 0) {
+      return;
+    }
+    // Enable clicking of links in presentation mode. Note: only links
+    // pointing to destinations in the current PDF document work.
+    if (
+      evt.target.href &&
+      evt.target.parentNode?.hasAttribute("data-internal-link")
+    ) {
+      return;
+    }
+    // Unless an internal link was clicked, advance one page.
+    evt.preventDefault();
 
-        if (evt.shiftKey) {
-          this.pdfViewer.previousPage();
-        } else {
-          this.pdfViewer.nextPage();
-        }
-      }
+    if (evt.shiftKey) {
+      this.pdfViewer.previousPage();
+    } else {
+      this.pdfViewer.nextPage();
     }
   }
 

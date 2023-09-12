@@ -13,8 +13,8 @@
  * limitations under the License.
  */
 
+import { bytesToString, isNodeJS } from "../../src/shared/util.js";
 import {
-  binarySearchFirstItem,
   DOMCanvasFactory,
   DOMSVGFactory,
   getFilenameFromUrl,
@@ -22,43 +22,8 @@ import {
   isValidFetchUrl,
   PDFDateString,
 } from "../../src/display/display_utils.js";
-import { bytesToString } from "../../src/shared/util.js";
-import { isNodeJS } from "../../src/shared/is_node.js";
 
 describe("display_utils", function () {
-  describe("binary search", function () {
-    function isTrue(boolean) {
-      return boolean;
-    }
-    function isGreater3(number) {
-      return number > 3;
-    }
-
-    it("empty array", function () {
-      expect(binarySearchFirstItem([], isTrue)).toEqual(0);
-    });
-    it("single boolean entry", function () {
-      expect(binarySearchFirstItem([false], isTrue)).toEqual(1);
-      expect(binarySearchFirstItem([true], isTrue)).toEqual(0);
-    });
-    it("three boolean entries", function () {
-      expect(binarySearchFirstItem([true, true, true], isTrue)).toEqual(0);
-      expect(binarySearchFirstItem([false, true, true], isTrue)).toEqual(1);
-      expect(binarySearchFirstItem([false, false, true], isTrue)).toEqual(2);
-      expect(binarySearchFirstItem([false, false, false], isTrue)).toEqual(3);
-    });
-    it("three numeric entries", function () {
-      expect(binarySearchFirstItem([0, 1, 2], isGreater3)).toEqual(3);
-      expect(binarySearchFirstItem([2, 3, 4], isGreater3)).toEqual(2);
-      expect(binarySearchFirstItem([4, 5, 6], isGreater3)).toEqual(0);
-    });
-    it("three numeric entries and a start index", function () {
-      expect(binarySearchFirstItem([0, 1, 2, 3, 4], isGreater3, 2)).toEqual(4);
-      expect(binarySearchFirstItem([2, 3, 4], isGreater3, 2)).toEqual(2);
-      expect(binarySearchFirstItem([4, 5, 6], isGreater3, 1)).toEqual(1);
-    });
-  });
-
   describe("DOMCanvasFactory", function () {
     let canvasFactory;
 
@@ -223,6 +188,13 @@ describe("display_utils", function () {
     it("should get the filename from a URL with query parameters", function () {
       const url = "https://server.org/filename.pdf?foo=bar";
       expect(getFilenameFromUrl(url)).toEqual("filename.pdf");
+    });
+
+    it("should get the filename from a relative URL, keeping the anchor", function () {
+      const url = "../../part1#part2.pdf";
+      expect(getFilenameFromUrl(url, /* onlyStripPath = */ true)).toEqual(
+        "part1#part2.pdf"
+      );
     });
   });
 

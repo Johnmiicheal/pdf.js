@@ -27,6 +27,26 @@ if (typeof PDFJSDev === "undefined" || !PDFJSDev.test("CHROME")) {
   );
 }
 
+(function rewriteUrlClosure() {
+  // Run this code outside DOMContentLoaded to make sure that the URL
+  // is rewritten as soon as possible.
+  const queryString = document.location.search.slice(1);
+  const m = /(^|&)file=([^&]*)/.exec(queryString);
+  const defaultUrl = m ? decodeURIComponent(m[2]) : "";
+
+  // Example: chrome-extension://.../http://example.com/file.pdf
+  const humanReadableUrl = "/" + defaultUrl + location.hash;
+  history.replaceState(history.state, "", humanReadableUrl);
+  if (top === window) {
+    chrome.runtime.sendMessage("showPageAction");
+  }
+
+  AppOptions.set("defaultUrl", defaultUrl);
+  // Ensure that PDFViewerApplication.initialBookmark reflects the current hash,
+  // in case the URL rewrite above results in a different hash.
+  PDFViewerApplication.initialBookmark = location.hash.slice(1);
+})();
+
 const ChromeCom = {
   /**
    * Creates an event that the extension is listening for and will
@@ -45,9 +65,7 @@ const ChromeCom = {
     };
     if (!chrome.runtime) {
       console.error("chrome.runtime is undefined.");
-      if (callback) {
-        callback();
-      }
+      callback?.();
     } else if (callback) {
       chrome.runtime.sendMessage(message, callback);
     } else {
@@ -135,7 +153,7 @@ function isRuntimeAvailable() {
     if (chrome.runtime?.getManifest()) {
       return true;
     }
-  } catch (e) {}
+  } catch {}
   return false;
 }
 
@@ -358,7 +376,7 @@ class ChromePreferences extends BasePreferences {
         );
 
         chrome.storage.managed.get(defaultManagedPrefs, function (items) {
-          items = items || defaultManagedPrefs;
+          items ||= defaultManagedPrefs;
           // Migration logic for deprecated preferences: If the new preference
           // is not defined by an administrator (i.e. the value is the same as
           // the default value), and a deprecated preference is set with a
@@ -374,12 +392,8 @@ class ChromePreferences extends BasePreferences {
           delete items.enableHandToolOnLoad;
 
           // Migration code for https://github.com/mozilla/pdf.js/pull/9479.
-          if (items.textLayerMode !== 1) {
-            if (items.disableTextLayer) {
-              items.textLayerMode = 0;
-            } else if (items.enhanceTextSelection) {
-              items.textLayerMode = 2;
-            }
+          if (items.textLayerMode !== 1 && items.disableTextLayer) {
+            items.textLayerMode = 0;
           }
           delete items.disableTextLayer;
           delete items.enhanceTextSelection;
@@ -413,7 +427,7 @@ class ChromeExternalServices extends DefaultExternalServices {
     );
   }
 
-  static createDownloadManager(options) {
+  static createDownloadManager() {
     return new DownloadManager();
   }
 

@@ -31,17 +31,27 @@ See https://github.com/adobe-type-tools/cmap-resources
 
 <!--#if MOZCENTRAL-->
 <!--#include viewer-snippet-firefox-extension.html-->
-<!--#endif-->
-<!--#if CHROME-->
+<!--#elif CHROME-->
 <!--#include viewer-snippet-chrome-extension.html-->
+<!--#elif MINIFIED-->
+<!--#include viewer-snippet-minified.html-->
+<!--#else-->
+<!--#include viewer-snippet.html-->
 <!--#endif-->
 
+<!--#if MOZCENTRAL-->
+<!--<link rel="stylesheet" href="resource://pdf.js/web/viewer.css">-->
+<!--#else-->
     <link rel="stylesheet" href="viewer.css">
-<!--#if !PRODUCTION-->
-    <link rel="resource" type="application/l10n" href="locale/locale.properties">
 <!--#endif-->
 
-<!--#if !PRODUCTION-->
+<!--#if MOZCENTRAL-->
+<!--<script src="resource://pdf.js/web/viewer.js"></script>-->
+<!--#elif !MINIFIED-->
+<!--<script src="viewer.js"></script>-->
+<!--#elif /* Development mode. */-->
+    <link rel="resource" type="application/l10n" href="locale/locale.properties">
+
     <script defer src="../node_modules/es-module-shims/dist/es-module-shims.js"></script>
     <script type="importmap-shim">
       {
@@ -49,24 +59,34 @@ See https://github.com/adobe-type-tools/cmap-resources
           "pdfjs/": "../src/",
           "pdfjs-lib": "../src/pdf.js",
           "pdfjs-web/": "./",
-          "pdfjs-fitCurve": "../build/dev-fitCurve/fit_curve.js"
+
+          "display-fetch_stream": "../src/display/fetch_stream.js",
+          "display-l10n_utils": "../src/display/stubs.js",
+          "display-network": "../src/display/network.js",
+          "display-node_stream": "../src/display/stubs.js",
+          "display-node_utils": "../src/display/stubs.js",
+          "display-svg": "../src/display/stubs.js",
+
+          "web-annotation_editor_params": "./annotation_editor_params.js",
+          "web-com": "./genericcom.js",
+          "web-pdf_attachment_viewer": "./pdf_attachment_viewer.js",
+          "web-pdf_cursor_tools": "./pdf_cursor_tools.js",
+          "web-pdf_document_properties": "./pdf_document_properties.js",
+          "web-pdf_find_bar": "./pdf_find_bar.js",
+          "web-pdf_layer_viewer": "./pdf_layer_viewer.js",
+          "web-pdf_outline_viewer": "./pdf_outline_viewer.js",
+          "web-pdf_presentation_mode": "./pdf_presentation_mode.js",
+          "web-pdf_sidebar": "./pdf_sidebar.js",
+          "web-pdf_thumbnail_viewer": "./pdf_thumbnail_viewer.js",
+          "web-print_service": "./pdf_print_service.js",
+          "web-secondary_toolbar": "./secondary_toolbar.js",
+          "web-toolbar": "./toolbar.js"
         }
       }
     </script>
 
     <script src="viewer.js" type="module-shim"></script>
 <!--#endif-->
-
-<!--#if (GENERIC && !MINIFIED) -->
-<!--#include viewer-snippet.html-->
-<!--#endif-->
-
-<!--#if !MINIFIED -->
-<!--<script src="viewer.js"></script>-->
-<!--#else-->
-<!--#include viewer-snippet-minified.html-->
-<!--#endif-->
-
   </head>
 
   <body tabindex="1">
@@ -178,31 +198,45 @@ See https://github.com/adobe-type-tools/cmap-resources
           </div>
         </div>
 
+        <div class="editorParamsToolbar hidden doorHangerRight" id="editorStampParamsToolbar">
+          <div class="editorParamsToolbarContainer">
+            <button id="editorStampAddImage" class="secondaryToolbarButton" title="Add image" tabindex="105" data-l10n-id="editor_stamp_add_image">
+              <span data-l10n-id="editor_stamp_add_image_label">Add image</span>
+            </button>
+          </div>
+        </div>
+
         <div id="secondaryToolbar" class="secondaryToolbar hidden doorHangerRight">
           <div id="secondaryToolbarButtonContainer">
-            <button id="secondaryPresentationMode" class="secondaryToolbarButton visibleLargeView" title="Switch to Presentation Mode" tabindex="51" data-l10n-id="presentation_mode">
-              <span data-l10n-id="presentation_mode_label">Presentation Mode</span>
-            </button>
-
 <!--#if GENERIC-->
-            <button id="secondaryOpenFile" class="secondaryToolbarButton visibleLargeView" title="Open File" tabindex="52" data-l10n-id="open_file">
+            <button id="secondaryOpenFile" class="secondaryToolbarButton visibleLargeView" title="Open File" tabindex="51" data-l10n-id="open_file">
               <span data-l10n-id="open_file_label">Open</span>
             </button>
 <!--#endif-->
 
-            <button id="secondaryPrint" class="secondaryToolbarButton visibleMediumView" title="Print" tabindex="53" data-l10n-id="print">
+            <button id="secondaryPrint" class="secondaryToolbarButton visibleMediumView" title="Print" tabindex="52" data-l10n-id="print">
               <span data-l10n-id="print_label">Print</span>
             </button>
 
-            <button id="secondaryDownload" class="secondaryToolbarButton visibleMediumView" title="Download" tabindex="54" data-l10n-id="download">
-              <span data-l10n-id="download_label">Download</span>
+            <button id="secondaryDownload" class="secondaryToolbarButton visibleMediumView" title="Save" tabindex="53" data-l10n-id="save">
+              <span data-l10n-id="save_label">Save</span>
             </button>
 
-            <a href="#" id="secondaryViewBookmark" class="secondaryToolbarButton visibleSmallView" title="Current view (copy or open in new window)" tabindex="55" data-l10n-id="bookmark">
-              <span data-l10n-id="bookmark_label">Current View</span>
+<!--#if GENERIC-->
+            <div class="horizontalToolbarSeparator visibleLargeView"></div>
+<!--#else-->
+<!--        <div class="horizontalToolbarSeparator visibleMediumView"></div>-->
+<!--#endif-->
+
+            <button id="presentationMode" class="secondaryToolbarButton" title="Switch to Presentation Mode" tabindex="54" data-l10n-id="presentation_mode">
+              <span data-l10n-id="presentation_mode_label">Presentation Mode</span>
+            </button>
+
+            <a href="#" id="viewBookmark" class="secondaryToolbarButton" title="Current Page (View URL from Current Page)" tabindex="55" data-l10n-id="bookmark1">
+              <span data-l10n-id="bookmark1_label">Current Page</span>
             </a>
 
-            <div class="horizontalToolbarSeparator visibleLargeView"></div>
+            <div id="viewBookmarkSeparator" class="horizontalToolbarSeparator"></div>
 
             <button id="firstPage" class="secondaryToolbarButton" title="Go to First Page" tabindex="56" data-l10n-id="first_page">
               <span data-l10n-id="first_page_label">Go to First Page</span>
@@ -290,47 +324,39 @@ See https://github.com/adobe-type-tools/cmap-resources
                     <span data-l10n-id="next_label">Next</span>
                   </button>
                 </div>
-                <input type="number" id="pageNumber" class="toolbarField" title="Page" value="1" size="4" min="1" tabindex="15" data-l10n-id="page" autocomplete="off">
+                <input type="number" id="pageNumber" class="toolbarField" title="Page" value="1" min="1" tabindex="15" data-l10n-id="page" autocomplete="off">
                 <span id="numPages" class="toolbarLabel"></span>
               </div>
               <div id="toolbarViewerRight">
-                <button id="presentationMode" class="toolbarButton hiddenLargeView" title="Switch to Presentation Mode" tabindex="31" data-l10n-id="presentation_mode">
-                  <span data-l10n-id="presentation_mode_label">Presentation Mode</span>
-                </button>
-
 <!--#if GENERIC-->
-                <button id="openFile" class="toolbarButton hiddenLargeView" title="Open File" tabindex="32" data-l10n-id="open_file">
+                <button id="openFile" class="toolbarButton hiddenLargeView" title="Open File" tabindex="31" data-l10n-id="open_file">
                   <span data-l10n-id="open_file_label">Open</span>
                 </button>
 <!--#endif-->
 
-                <button id="print" class="toolbarButton hiddenMediumView" title="Print" tabindex="33" data-l10n-id="print">
+                <button id="print" class="toolbarButton hiddenMediumView" title="Print" tabindex="32" data-l10n-id="print">
                   <span data-l10n-id="print_label">Print</span>
                 </button>
 
-                <button id="download" class="toolbarButton hiddenMediumView" title="Download" tabindex="34" data-l10n-id="download">
-                  <span data-l10n-id="download_label">Download</span>
+                <button id="download" class="toolbarButton hiddenMediumView" title="Save" tabindex="33" data-l10n-id="save">
+                  <span data-l10n-id="save_label">Save</span>
                 </button>
-                <a href="#" id="viewBookmark" class="toolbarButton hiddenSmallView" title="Current view (copy or open in new window)" tabindex="35" data-l10n-id="bookmark">
-                  <span data-l10n-id="bookmark_label">Current View</span>
-                </a>
 
-                <div class="verticalToolbarSeparator hiddenSmallView"></div>
+                <div class="verticalToolbarSeparator hiddenMediumView"></div>
 
-                <div id="editorModeButtons" class="splitToolbarButton toggled hidden" role="radiogroup">
-                  <button id="editorNone" class="toolbarButton toggled" disabled="disabled" title="Disable Annotation Editing" role="radio" aria-checked="true" tabindex="36" data-l10n-id="editor_none">
-                    <span data-l10n-id="editor_none_label">Disable Editing</span>
+                <div id="editorModeButtons" class="splitToolbarButton toggled" role="radiogroup">
+                  <button id="editorFreeText" class="toolbarButton" disabled="disabled" title="Text" role="radio" aria-checked="false" aria-controls="editorFreeTextParamsToolbar" tabindex="34" data-l10n-id="editor_free_text2">
+                    <span data-l10n-id="editor_free_text2_label">Text</span>
                   </button>
-                  <button id="editorFreeText" class="toolbarButton" disabled="disabled" title="Add FreeText Annotation" role="radio" aria-checked="false" tabindex="37" data-l10n-id="editor_free_text">
-                    <span data-l10n-id="editor_free_text_label">FreeText Annotation</span>
+                  <button id="editorInk" class="toolbarButton" disabled="disabled" title="Draw" role="radio" aria-checked="false" aria-controls="editorInkParamsToolbar" tabindex="35" data-l10n-id="editor_ink2">
+                    <span data-l10n-id="editor_ink2_label">Draw</span>
                   </button>
-                  <button id="editorInk" class="toolbarButton" disabled="disabled" title="Add Ink Annotation" role="radio" aria-checked="false" tabindex="38" data-l10n-id="editor_ink">
-                    <span data-l10n-id="editor_ink_label">Ink Annotation</span>
+                  <button id="editorStamp" class="toolbarButton hidden" disabled="disabled" title="Add or edit images" role="radio" aria-checked="false" aria-controls="editorStampParamsToolbar" tabindex="36" data-l10n-id="editor_stamp1">
+                    <span data-l10n-id="editor_stamp1_label">Add or edit images</span>
                   </button>
                 </div>
 
-                <!-- Should be visible when the "editorModeButtons" are visible. -->
-                <div id="editorModeSeparator" class="verticalToolbarSeparator hidden"></div>
+                <div id="editorModeSeparator" class="verticalToolbarSeparator"></div>
 
                 <button id="secondaryToolbarToggle" class="toolbarButton" title="Tools" tabindex="48" data-l10n-id="tools" aria-expanded="false" aria-controls="secondaryToolbar">
                   <span data-l10n-id="tools_label">Tools</span>
@@ -377,27 +403,6 @@ See https://github.com/adobe-type-tools/cmap-resources
         <div id="viewerContainer" tabindex="0">
           <div id="viewer" class="pdfViewer"></div>
         </div>
-
-<!--#if !MOZCENTRAL-->
-        <div id="errorWrapper" hidden='true'>
-          <div id="errorMessageLeft">
-            <span id="errorMessage"></span>
-            <button id="errorShowMore" data-l10n-id="error_more_info">
-              More Information
-            </button>
-            <button id="errorShowLess" data-l10n-id="error_less_info" hidden='true'>
-              Less Information
-            </button>
-          </div>
-          <div id="errorMessageRight">
-            <button id="errorClose" data-l10n-id="error_close">
-              Close
-            </button>
-          </div>
-          <div id="errorSpacer"></div>
-          <textarea id="errorMoreInfo" hidden='true' readonly="readonly"></textarea>
-        </div>
-<!--#endif-->
       </div> <!-- mainContainer -->
 
       <div id="dialogContainer">

@@ -47,11 +47,9 @@ function download(blobUrl, filename) {
  * @implements {IDownloadManager}
  */
 class DownloadManager {
-  constructor() {
-    this._openBlobUrls = new WeakMap();
-  }
+  #openBlobUrls = new WeakMap();
 
-  downloadUrl(url, filename) {
+  downloadUrl(url, filename, _options) {
     if (!createValidAbsoluteUrl(url, "http://example.com")) {
       console.error(`downloadUrl - not a valid URL: ${url}`);
       return; // restricted/invalid URL
@@ -73,11 +71,14 @@ class DownloadManager {
     const isPdfData = isPdfFile(filename);
     const contentType = isPdfData ? "application/pdf" : "";
 
-    if (isPdfData) {
-      let blobUrl = this._openBlobUrls.get(element);
+    if (
+      (typeof PDFJSDev === "undefined" || !PDFJSDev.test("COMPONENTS")) &&
+      isPdfData
+    ) {
+      let blobUrl = this.#openBlobUrls.get(element);
       if (!blobUrl) {
         blobUrl = URL.createObjectURL(new Blob([data], { type: contentType }));
-        this._openBlobUrls.set(element, blobUrl);
+        this.#openBlobUrls.set(element, blobUrl);
       }
       let viewerUrl;
       if (typeof PDFJSDev === "undefined" || PDFJSDev.test("GENERIC")) {
@@ -101,7 +102,7 @@ class DownloadManager {
         // Release the `blobUrl`, since opening it failed, and fallback to
         // downloading the PDF file.
         URL.revokeObjectURL(blobUrl);
-        this._openBlobUrls.delete(element);
+        this.#openBlobUrls.delete(element);
       }
     }
 
@@ -109,7 +110,7 @@ class DownloadManager {
     return false;
   }
 
-  download(blob, url, filename) {
+  download(blob, url, filename, _options) {
     const blobUrl = URL.createObjectURL(blob);
     download(blobUrl, filename);
   }

@@ -40,11 +40,14 @@ class FirefoxCom {
     const request = document.createTextNode("");
     document.documentElement.append(request);
 
-    const sender = document.createEvent("CustomEvent");
-    sender.initCustomEvent("pdf.js.message", true, false, {
-      action,
-      data,
-      sync: true,
+    const sender = new CustomEvent("pdf.js.message", {
+      bubbles: true,
+      cancelable: false,
+      detail: {
+        action,
+        data,
+        sync: true,
+      },
     });
     request.dispatchEvent(sender);
     const response = sender.detail.response;
@@ -88,26 +91,28 @@ class FirefoxCom {
     }
     document.documentElement.append(request);
 
-    const sender = document.createEvent("CustomEvent");
-    sender.initCustomEvent("pdf.js.message", true, false, {
-      action,
-      data,
-      sync: false,
-      responseExpected: !!callback,
+    const sender = new CustomEvent("pdf.js.message", {
+      bubbles: true,
+      cancelable: false,
+      detail: {
+        action,
+        data,
+        sync: false,
+        responseExpected: !!callback,
+      },
     });
     request.dispatchEvent(sender);
   }
 }
 
 class DownloadManager {
-  constructor() {
-    this._openBlobUrls = new WeakMap();
-  }
+  #openBlobUrls = new WeakMap();
 
-  downloadUrl(url, filename) {
+  downloadUrl(url, filename, options = {}) {
     FirefoxCom.request("download", {
       originalUrl: url,
       filename,
+      options,
     });
   }
 
@@ -132,10 +137,10 @@ class DownloadManager {
     const contentType = isPdfData ? "application/pdf" : "";
 
     if (isPdfData) {
-      let blobUrl = this._openBlobUrls.get(element);
+      let blobUrl = this.#openBlobUrls.get(element);
       if (!blobUrl) {
         blobUrl = URL.createObjectURL(new Blob([data], { type: contentType }));
-        this._openBlobUrls.set(element, blobUrl);
+        this.#openBlobUrls.set(element, blobUrl);
       }
       // Let Firefox's content handler catch the URL and display the PDF.
       const viewerUrl = blobUrl + "#filename=" + encodeURIComponent(filename);
@@ -148,7 +153,7 @@ class DownloadManager {
         // Release the `blobUrl`, since opening it failed, and fallback to
         // downloading the PDF file.
         URL.revokeObjectURL(blobUrl);
-        this._openBlobUrls.delete(element);
+        this.#openBlobUrls.delete(element);
       }
     }
 
@@ -156,25 +161,21 @@ class DownloadManager {
     return false;
   }
 
-  download(blob, url, filename) {
+  download(blob, url, filename, options = {}) {
     const blobUrl = URL.createObjectURL(blob);
 
     FirefoxCom.request("download", {
       blobUrl,
       originalUrl: url,
       filename,
+      options,
     });
   }
 }
 
 class FirefoxPreferences extends BasePreferences {
-  async _writeToStorage(prefObj) {
-    return FirefoxCom.requestAsync("setPreferences", prefObj);
-  }
-
   async _readFromStorage(prefObj) {
-    const prefStr = await FirefoxCom.requestAsync("getPreferences", prefObj);
-    return JSON.parse(prefStr);
+    return FirefoxCom.requestAsync("getPreferences", prefObj);
   }
 }
 
@@ -224,7 +225,6 @@ class MozL10n {
       source: window,
       type: type.substring(findLen),
       query: detail.query,
-      phraseSearch: true,
       caseSensitive: !!detail.caseSensitive,
       entireWord: !!detail.entireWord,
       highlightAll: !!detail.highlightAll,
@@ -284,6 +284,50 @@ class MozL10n {
 
   window.addEventListener("editingaction", handleEvent);
 })();
+
+if (PDFJSDev.test("GECKOVIEW")) {
+  (function listenQueryEvents() {
+    window.addEventListener("pdf.js.query", async ({ detail: { queryId } }) => {
+      let result = null;
+      if (queryId === "canDownloadInsteadOfPrint") {
+        result = false;
+        const { pdfDocument, pdfViewer } = PDFViewerApplication;
+        if (pdfDocument) {
+          try {
+            const hasUnchangedAnnotations =
+              pdfDocument.annotationStorage.size === 0;
+            // WillPrint is called just before printing the document and could
+            // lead to have modified annotations.
+            const hasWillPrint =
+              pdfViewer.enableScripting &&
+              !!(await pdfDocument.getJSActions())?.WillPrint;
+            const hasUnchangedOptionalContent = (
+              await pdfViewer.optionalContentConfigPromise
+            ).hasInitialVisibility;
+
+            result =
+              hasUnchangedAnnotations &&
+              !hasWillPrint &&
+              hasUnchangedOptionalContent;
+          } catch {
+            console.warn("Unable to check if the document can be downloaded.");
+          }
+        }
+      }
+
+      window.dispatchEvent(
+        new CustomEvent("pdf.js.query.answer", {
+          bubbles: true,
+          cancelable: false,
+          detail: {
+            queryId,
+            value: result,
+          },
+        })
+      );
+    });
+  })();
+}
 
 class FirefoxComDataRangeTransport extends PDFDataRangeTransport {
   requestDataRange(begin, end) {
@@ -349,11 +393,7 @@ class FirefoxExternalServices extends DefaultExternalServices {
             args.filename
           );
 
-          callbacks.onOpenWithTransport(
-            args.pdfUrl,
-            args.length,
-            pdfDataRangeTransport
-          );
+          callbacks.onOpenWithTransport(pdfDataRangeTransport);
           break;
         case "range":
           pdfDataRangeTransport.onDataRange(args.begin, args.chunk);
@@ -390,7 +430,7 @@ class FirefoxExternalServices extends DefaultExternalServices {
     FirefoxCom.request("reportTelemetry", JSON.stringify(data));
   }
 
-  static createDownloadManager(options) {
+  static createDownloadManager() {
     return new DownloadManager();
   }
 
@@ -410,6 +450,11 @@ class FirefoxExternalServices extends DefaultExternalServices {
 
   static createScripting(options) {
     return FirefoxScripting;
+  }
+
+  static get supportsPinchToZoom() {
+    const support = FirefoxCom.requestSync("supportsPinchToZoom");
+    return shadow(this, "supportsPinchToZoom", support);
   }
 
   static get supportsIntegratedFind() {
@@ -434,6 +479,19 @@ class FirefoxExternalServices extends DefaultExternalServices {
     // various test-suites are running in mozilla-central.
     const isInAutomation = FirefoxCom.requestSync("isInAutomation");
     return shadow(this, "isInAutomation", isInAutomation);
+  }
+
+  static get canvasMaxAreaInBytes() {
+    const maxArea = FirefoxCom.requestSync("getCanvasMaxArea");
+    return shadow(this, "canvasMaxAreaInBytes", maxArea);
+  }
+
+  static async getNimbusExperimentData() {
+    const nimbusData = await FirefoxCom.requestAsync(
+      "getNimbusExperimentData",
+      null
+    );
+    return nimbusData && JSON.parse(nimbusData);
   }
 }
 PDFViewerApplication.externalServices = FirefoxExternalServices;

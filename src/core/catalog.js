@@ -16,6 +16,7 @@
 import {
   collectActions,
   MissingDataException,
+  PDF_VERSION_REGEXP,
   recoverJsURL,
   toRomanNumerals,
   XRefEntryException,
@@ -80,15 +81,18 @@ class Catalog {
     this.pageKidsCountCache = new RefSetCache();
     this.pageIndexCache = new RefSetCache();
     this.nonBlendModesSet = new RefSet();
+    this.systemFontCache = new Map();
   }
 
   get version() {
     const version = this._catDict.get("Version");
-    return shadow(
-      this,
-      "version",
-      version instanceof Name ? version.name : null
-    );
+    if (version instanceof Name) {
+      if (PDF_VERSION_REGEXP.test(version.name)) {
+        return shadow(this, "version", version.name);
+      }
+      warn(`Invalid PDF catalog version: ${version.name}`);
+    }
+    return shadow(this, "version", null);
   }
 
   get lang() {
@@ -158,10 +162,10 @@ class Catalog {
 
     let metadata = null;
     try {
-      const suppressEncryption = !(
-        this.xref.encrypt && this.xref.encrypt.encryptMetadata
+      const stream = this.xref.fetch(
+        streamRef,
+        /* suppressEncryption = */ !this.xref.encrypt?.encryptMetadata
       );
-      const stream = this.xref.fetch(streamRef, suppressEncryption);
 
       if (stream instanceof BaseStream && stream.dict instanceof Dict) {
         const type = stream.dict.get("Type");
@@ -302,11 +306,12 @@ class Catalog {
         throw new FormatError("Invalid outline item encountered.");
       }
 
-      const data = { url: null, dest: null };
+      const data = { url: null, dest: null, action: null };
       Catalog.parseDestDictionary({
         destDict: outlineDict,
         resultObj: data,
-        docBaseUrl: this.pdfManager.docBaseUrl,
+        docBaseUrl: this.baseUrl,
+        docAttachments: this.attachments,
       });
       const title = outlineDict.get("Title");
       const flags = outlineDict.get("F") || 0;
@@ -324,10 +329,13 @@ class Catalog {
       }
 
       const outlineItem = {
+        action: data.action,
+        attachment: data.attachment,
         dest: data.dest,
         url: data.url,
         unsafeUrl: data.unsafeUrl,
         newWindow: data.newWindow,
+        setOCGState: data.setOCGState,
         title: stringToPDFString(title),
         color: rgbColor,
         count: Number.isInteger(count) ? count : undefined,
@@ -608,7 +616,7 @@ class Catalog {
    */
   _readDests() {
     const obj = this._catDict.get("Names");
-    if (obj && obj.has("Dests")) {
+    if (obj?.has("Dests")) {
       return new NameTree(obj.getRaw("Dests"), this.xref);
     } else if (this._catDict.has("Dests")) {
       // Simple destination dictionary.
@@ -978,12 +986,11 @@ class Catalog {
       } else if (typeof js !== "string") {
         return;
       }
-
-      if (javaScript === null) {
-        javaScript = new Map();
+      js = stringToPDFString(js).replaceAll("\x00", "");
+      // Skip empty entries, similar to the `_collectJS` function.
+      if (js) {
+        (javaScript ||= new Map()).set(name, js);
       }
-      js = stringToPDFString(js).replace(/\u0000/g, "");
-      javaScript.set(name, js);
     }
 
     if (obj instanceof Dict && obj.has("JavaScript")) {
@@ -1001,15 +1008,6 @@ class Catalog {
     return javaScript;
   }
 
-  get javaScript() {
-    const javaScript = this._collectJavaScript();
-    return shadow(
-      this,
-      "javaScript",
-      javaScript ? [...javaScript.values()] : null
-    );
-  }
-
   get jsActions() {
     const javaScript = this._collectJavaScript();
     let actions = collectActions(
@@ -1019,9 +1017,8 @@ class Catalog {
     );
 
     if (javaScript) {
-      if (!actions) {
-        actions = Object.create(null);
-      }
+      actions ||= Object.create(null);
+
       for (const [key, val] of javaScript) {
         if (key in actions) {
           actions[key].push(val);
@@ -1059,6 +1056,7 @@ class Catalog {
     this.fontCache.clear();
     this.builtInCMapCache.clear();
     this.standardFontDataCache.clear();
+    this.systemFontCache.clear();
   }
 
   async getPageDict(pageIndex) {
@@ -1184,6 +1182,8 @@ class Catalog {
    * @returns {Promise<Map>}
    */
   async getAllPageDicts(recoveryMode = false) {
+    const { ignoreErrors } = this.pdfManager.evaluatorOptions;
+
     const queue = [{ currentNode: this.toplevelPagesDict, posInKids: 0 }];
     const visitedNodes = new RefSet();
 
@@ -1207,6 +1207,11 @@ class Catalog {
     function addPageError(error) {
       if (error instanceof XRefEntryException && !recoveryMode) {
         throw error;
+      }
+      if (recoveryMode && ignoreErrors && pageIndex === 0) {
+        // Ensure that the viewer will always load (fixes issue15590.pdf).
+        warn(`getAllPageDicts - Skipping invalid first page: "${error}".`);
+        error = Dict.empty;
       }
 
       map.set(pageIndex++, [error, null]);
@@ -1341,8 +1346,7 @@ class Catalog {
 
           const kidPromises = [];
           let found = false;
-          for (let i = 0, ii = kids.length; i < ii; i++) {
-            const kid = kids[i];
+          for (const kid of kids) {
             if (!(kid instanceof Ref)) {
               throw new FormatError("Kid must be a reference.");
             }
@@ -1401,7 +1405,7 @@ class Catalog {
         }
       }
     }
-    return shadow(this, "baseUrl", null);
+    return shadow(this, "baseUrl", this.pdfManager.docBaseUrl);
   }
 
   /**
@@ -1411,24 +1415,24 @@ class Catalog {
    *   properties will be placed.
    * @property {string} [docBaseUrl] - The document base URL that is used when
    *   attempting to recover valid absolute URLs from relative ones.
+   * @property {Object} [docAttachments] - The document attachments (may not
+   *   exist in most PDF documents).
    */
 
   /**
    * Helper function used to parse the contents of destination dictionaries.
    * @param {ParseDestDictionaryParameters} params
    */
-  static parseDestDictionary(params) {
-    const destDict = params.destDict;
+  static parseDestDictionary({
+    destDict,
+    resultObj,
+    docBaseUrl = null,
+    docAttachments = null,
+  }) {
     if (!(destDict instanceof Dict)) {
       warn("parseDestDictionary: `destDict` must be a dictionary.");
       return;
     }
-    const resultObj = params.resultObj;
-    if (typeof resultObj !== "object") {
-      warn("parseDestDictionary: `resultObj` must be an object.");
-      return;
-    }
-    const docBaseUrl = params.docBaseUrl || null;
 
     let action = destDict.get("A"),
       url,
@@ -1525,11 +1529,63 @@ class Catalog {
           }
           break;
 
+        case "GoToE":
+          const target = action.get("T");
+          let attachment;
+
+          if (docAttachments && target instanceof Dict) {
+            const relationship = target.get("R");
+            const name = target.get("N");
+
+            if (isName(relationship, "C") && typeof name === "string") {
+              attachment = docAttachments[stringToPDFString(name)];
+            }
+          }
+
+          if (attachment) {
+            resultObj.attachment = attachment;
+          } else {
+            warn(`parseDestDictionary - unimplemented "GoToE" action.`);
+          }
+          break;
+
         case "Named":
           const namedAction = action.get("N");
           if (namedAction instanceof Name) {
             resultObj.action = namedAction.name;
           }
+          break;
+
+        case "SetOCGState":
+          const state = action.get("State");
+          const preserveRB = action.get("PreserveRB");
+
+          if (!Array.isArray(state) || state.length === 0) {
+            break;
+          }
+          const stateArr = [];
+
+          for (const elem of state) {
+            if (elem instanceof Name) {
+              switch (elem.name) {
+                case "ON":
+                case "OFF":
+                case "Toggle":
+                  stateArr.push(elem.name);
+                  break;
+              }
+            } else if (elem instanceof Ref) {
+              stateArr.push(elem.toString());
+            }
+          }
+
+          if (stateArr.length !== state.length) {
+            break; // Some of the original entries are not valid.
+          }
+          resultObj.setOCGState = {
+            state: stateArr,
+            preserveRB: typeof preserveRB === "boolean" ? preserveRB : true,
+          };
           break;
 
         case "JavaScript":

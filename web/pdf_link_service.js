@@ -16,7 +16,7 @@
 /** @typedef {import("./event_utils").EventBus} EventBus */
 /** @typedef {import("./interfaces").IPDFLinkService} IPDFLinkService */
 
-import { parseQueryString, removeNullCharacters } from "./ui_utils.js";
+import { parseQueryString } from "./ui_utils.js";
 
 const DEFAULT_LINK_REL = "noopener noreferrer nofollow";
 
@@ -49,12 +49,11 @@ function addLinkAttributes(link, { url, target, rel, enabled = true } = {}) {
     throw new Error('A valid "url" parameter must provided.');
   }
 
-  const urlNullRemoved = removeNullCharacters(url);
   if (enabled) {
-    link.href = link.title = urlNullRemoved;
+    link.href = link.title = url;
   } else {
     link.href = "";
-    link.title = `Disabled: ${urlNullRemoved}`;
+    link.title = `Disabled: ${url}`;
     link.onclick = () => {
       return false;
     };
@@ -171,6 +170,13 @@ class PDFLinkService {
    */
   set rotation(value) {
     this.pdfViewer.pagesRotation = value;
+  }
+
+  /**
+   * @type {boolean}
+   */
+  get isInPresentationMode() {
+    return this.pdfViewer.isInPresentationMode;
   }
 
   #goToDestinationHelper(rawDest, namedDest = null, explicitDest) {
@@ -329,7 +335,7 @@ class PDFLinkService {
    * @returns {string} The hyperlink to the PDF object.
    */
   getAnchorUrl(anchor) {
-    return (this.baseUrl || "") + anchor;
+    return this.baseUrl ? this.baseUrl + anchor : anchor;
   }
 
   /**
@@ -343,10 +349,12 @@ class PDFLinkService {
     if (hash.includes("=")) {
       const params = parseQueryString(hash);
       if (params.has("search")) {
+        const query = params.get("search").replaceAll('"', ""),
+          phrase = params.get("phrase") === "true";
+
         this.eventBus.dispatch("findfromurlhash", {
           source: this,
-          query: params.get("search").replace(/"/g, ""),
-          phraseSearch: params.get("phrase") === "true",
+          query: phrase ? query : query.match(/\S+/g),
         });
       }
       // borrowing syntax from "Parameters for Opening PDF Files"
@@ -369,40 +377,38 @@ class PDFLinkService {
             zoomArgs.length > 2 ? zoomArgs[2] | 0 : null,
             zoomArgNumber ? zoomArgNumber / 100 : zoomArg,
           ];
-        } else {
-          if (zoomArg === "Fit" || zoomArg === "FitB") {
-            dest = [null, { name: zoomArg }];
-          } else if (
-            zoomArg === "FitH" ||
-            zoomArg === "FitBH" ||
-            zoomArg === "FitV" ||
-            zoomArg === "FitBV"
-          ) {
+        } else if (zoomArg === "Fit" || zoomArg === "FitB") {
+          dest = [null, { name: zoomArg }];
+        } else if (
+          zoomArg === "FitH" ||
+          zoomArg === "FitBH" ||
+          zoomArg === "FitV" ||
+          zoomArg === "FitBV"
+        ) {
+          dest = [
+            null,
+            { name: zoomArg },
+            zoomArgs.length > 1 ? zoomArgs[1] | 0 : null,
+          ];
+        } else if (zoomArg === "FitR") {
+          if (zoomArgs.length !== 5) {
+            console.error(
+              'PDFLinkService.setHash: Not enough parameters for "FitR".'
+            );
+          } else {
             dest = [
               null,
               { name: zoomArg },
-              zoomArgs.length > 1 ? zoomArgs[1] | 0 : null,
+              zoomArgs[1] | 0,
+              zoomArgs[2] | 0,
+              zoomArgs[3] | 0,
+              zoomArgs[4] | 0,
             ];
-          } else if (zoomArg === "FitR") {
-            if (zoomArgs.length !== 5) {
-              console.error(
-                'PDFLinkService.setHash: Not enough parameters for "FitR".'
-              );
-            } else {
-              dest = [
-                null,
-                { name: zoomArg },
-                zoomArgs[1] | 0,
-                zoomArgs[2] | 0,
-                zoomArgs[3] | 0,
-                zoomArgs[4] | 0,
-              ];
-            }
-          } else {
-            console.error(
-              `PDFLinkService.setHash: "${zoomArg}" is not a valid zoom value.`
-            );
           }
+        } else {
+          console.error(
+            `PDFLinkService.setHash: "${zoomArg}" is not a valid zoom value.`
+          );
         }
       }
       if (dest) {
@@ -436,7 +442,7 @@ class PDFLinkService {
           // e.g. "4.3" or "true", because `JSON.parse` converted its type.
           dest = dest.toString();
         }
-      } catch (ex) {}
+      } catch {}
 
       if (
         typeof dest === "string" ||
@@ -494,6 +500,48 @@ class PDFLinkService {
   }
 
   /**
+   * @param {Object} action
+   */
+  async executeSetOCGState(action) {
+    const pdfDocument = this.pdfDocument;
+    const optionalContentConfig =
+      await this.pdfViewer.optionalContentConfigPromise;
+
+    if (pdfDocument !== this.pdfDocument) {
+      return; // The document was closed while the optional content resolved.
+    }
+    let operator;
+
+    for (const elem of action.state) {
+      switch (elem) {
+        case "ON":
+        case "OFF":
+        case "Toggle":
+          operator = elem;
+          continue;
+      }
+      switch (operator) {
+        case "ON":
+          optionalContentConfig.setVisibility(elem, true);
+          break;
+        case "OFF":
+          optionalContentConfig.setVisibility(elem, false);
+          break;
+        case "Toggle":
+          const group = optionalContentConfig.getGroup(elem);
+          if (group) {
+            optionalContentConfig.setVisibility(elem, !group.visible);
+          }
+          break;
+      }
+    }
+
+    this.pdfViewer.optionalContentConfigPromise = Promise.resolve(
+      optionalContentConfig
+    );
+  }
+
+  /**
    * @param {number} pageNum - page number.
    * @param {Object} pageRef - reference to the page.
    */
@@ -516,20 +564,6 @@ class PDFLinkService {
     const refStr =
       pageRef.gen === 0 ? `${pageRef.num}R` : `${pageRef.num}R${pageRef.gen}`;
     return this.#pagesRefCache.get(refStr) || null;
-  }
-
-  /**
-   * @param {number} pageNumber
-   */
-  isPageVisible(pageNumber) {
-    return this.pdfViewer.isPageVisible(pageNumber);
-  }
-
-  /**
-   * @param {number} pageNumber
-   */
-  isPageCached(pageNumber) {
-    return this.pdfViewer.isPageCached(pageNumber);
   }
 
   static #isValidExplicitDestination(dest) {
@@ -632,6 +666,13 @@ class SimpleLinkService {
   set rotation(value) {}
 
   /**
+   * @type {boolean}
+   */
+  get isInPresentationMode() {
+    return false;
+  }
+
+  /**
    * @param {string|Array} dest - The named, or explicit, PDF destination.
    */
   async goToDestination(dest) {}
@@ -677,24 +718,15 @@ class SimpleLinkService {
   executeNamedAction(action) {}
 
   /**
+   * @param {Object} action
+   */
+  executeSetOCGState(action) {}
+
+  /**
    * @param {number} pageNum - page number.
    * @param {Object} pageRef - reference to the page.
    */
   cachePageRef(pageNum, pageRef) {}
-
-  /**
-   * @param {number} pageNumber
-   */
-  isPageVisible(pageNumber) {
-    return true;
-  }
-
-  /**
-   * @param {number} pageNumber
-   */
-  isPageCached(pageNumber) {
-    return true;
-  }
 }
 
 export { LinkTarget, PDFLinkService, SimpleLinkService };

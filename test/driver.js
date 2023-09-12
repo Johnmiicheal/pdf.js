@@ -14,27 +14,26 @@
  */
 /* globals pdfjsLib, pdfjsViewer */
 
-"use strict";
-
 const {
   AnnotationLayer,
   AnnotationMode,
-  createPromiseCapability,
   getDocument,
   GlobalWorkerOptions,
   PixelsPerInch,
+  PromiseCapability,
   renderTextLayer,
   shadow,
   XfaLayer,
 } = pdfjsLib;
-const { parseQueryString, SimpleLinkService } = pdfjsViewer;
+const { GenericL10n, NullL10n, parseQueryString, SimpleLinkService } =
+  pdfjsViewer;
 
 const WAITING_TIME = 100; // ms
 const CMAP_URL = "/build/generic/web/cmaps/";
-const CMAP_PACKED = true;
 const STANDARD_FONT_DATA_URL = "/build/generic/web/standard_fonts/";
 const IMAGE_RESOURCES_PATH = "/web/images/";
 const VIEWER_CSS = "../build/components/pdf_viewer.css";
+const VIEWER_LOCALE = "en-US";
 const WORKER_SRC = "../build/generic/build/pdf.worker.js";
 const RENDER_TASK_ON_CONTINUE_DELAY = 5; // ms
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -62,22 +61,34 @@ function loadStyles(styles) {
   return Promise.all(promises);
 }
 
-function writeSVG(svgElement, ctx) {
-  // We need to have UTF-8 encoded XML.
-  const svg_xml = unescape(
-    encodeURIComponent(new XMLSerializer().serializeToString(svgElement))
-  );
+function loadImage(svg_xml, ctx) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.src = "data:image/svg+xml;base64," + btoa(svg_xml);
     img.onload = function () {
-      ctx.drawImage(img, 0, 0);
+      ctx?.drawImage(img, 0, 0);
       resolve();
     };
     img.onerror = function (e) {
       reject(new Error(`Error rasterizing SVG: ${e}`));
     };
   });
+}
+
+async function writeSVG(svgElement, ctx) {
+  // We need to have UTF-8 encoded XML.
+  const svg_xml = unescape(
+    encodeURIComponent(new XMLSerializer().serializeToString(svgElement))
+  );
+  if (svg_xml.includes("background-image: url(&quot;data:image")) {
+    // Workaround for https://bugzilla.mozilla.org/show_bug.cgi?id=1844414
+    // we load the image two times.
+    await loadImage(svg_xml, null);
+    await new Promise(resolve => {
+      setTimeout(resolve, 10);
+    });
+  }
+  return loadImage(svg_xml, ctx);
 }
 
 async function inlineImages(node, silentErrors = false) {
@@ -136,6 +147,7 @@ async function convertCanvasesToImages(annotationCanvasMap, outputScale) {
       new Promise(resolve => {
         canvas.toBlob(blob => {
           const image = document.createElement("img");
+          image.classList.add("wasCanvas");
           image.onload = function () {
             image.style.width = Math.floor(image.width / outputScale) + "px";
             resolve();
@@ -166,7 +178,7 @@ class Rasterize {
   }
 
   static get textStylePromise() {
-    const styles = ["./text_layer_test.css"];
+    const styles = [VIEWER_CSS, "./text_layer_test.css"];
     return shadow(this, "textStylePromise", loadStyles(styles));
   }
 
@@ -203,7 +215,8 @@ class Rasterize {
     annotationCanvasMap,
     page,
     imageResourcesPath,
-    renderForms = false
+    renderForms = false,
+    l10n = NullL10n
   ) {
     try {
       const { svg, foreignObject, style, div } = this.createContainer(viewport);
@@ -222,16 +235,20 @@ class Rasterize {
 
       // Rendering annotation layer as HTML.
       const parameters = {
-        viewport: annotationViewport,
-        div,
         annotations,
-        page,
         linkService: new SimpleLinkService(),
         imageResourcesPath,
         renderForms,
-        annotationCanvasMap: annotationImageMap,
       };
-      AnnotationLayer.render(parameters);
+      const annotationLayer = new AnnotationLayer({
+        div,
+        annotationCanvasMap: annotationImageMap,
+        page,
+        l10n,
+        viewport: annotationViewport,
+      });
+      await annotationLayer.render(parameters);
+      await annotationLayer.showPopups();
 
       // Inline SVG images from text annotations.
       await inlineImages(div);
@@ -244,7 +261,7 @@ class Rasterize {
     }
   }
 
-  static async textLayer(ctx, viewport, textContent, enhanceTextSelection) {
+  static async textLayer(ctx, viewport, textContent) {
     try {
       const { svg, foreignObject, style, div } = this.createContainer(viewport);
       div.className = "textLayer";
@@ -252,19 +269,19 @@ class Rasterize {
       // Items are transformed to have 1px font size.
       svg.setAttribute("font-size", 1);
 
-      const [overrides] = await this.textStylePromise;
-      style.textContent = overrides;
+      const [common, overrides] = await this.textStylePromise;
+      style.textContent =
+        `${common}\n${overrides}\n` +
+        `:root { --scale-factor: ${viewport.scale} }`;
 
       // Rendering text layer as HTML.
       const task = renderTextLayer({
-        textContent,
+        textContentSource: textContent,
         container: div,
         viewport,
-        enhanceTextSelection,
       });
-      await task.promise;
 
-      task.expandTextDivs(true);
+      await task.promise;
       svg.append(foreignObject);
 
       await writeSVG(svg, ctx);
@@ -318,7 +335,6 @@ class Rasterize {
  * @property {HTMLDivElement} end - Container for a completion message.
  */
 
-// eslint-disable-next-line no-unused-vars
 class Driver {
   /**
    * @param {DriverOptions} options
@@ -326,6 +342,8 @@ class Driver {
   constructor(options) {
     // Configure the global worker options.
     GlobalWorkerOptions.workerSrc = WORKER_SRC;
+
+    this._l10n = new GenericL10n(VIEWER_LOCALE);
 
     // Set the passed options
     this.inflight = options.inflight;
@@ -455,7 +473,6 @@ class Driver {
 
       this._log('Loading file "' + task.file + '"\n');
 
-      const absoluteUrl = new URL(task.file, window.location).href;
       try {
         let xfaStyleElement = null;
         if (task.enableXfa) {
@@ -467,22 +484,78 @@ class Driver {
             .getElementsByTagName("head")[0]
             .append(xfaStyleElement);
         }
+        const isOffscreenCanvasSupported =
+          task.isOffscreenCanvasSupported === false ? false : undefined;
 
         const loadingTask = getDocument({
-          url: absoluteUrl,
+          url: new URL(task.file, window.location),
           password: task.password,
           cMapUrl: CMAP_URL,
-          cMapPacked: CMAP_PACKED,
           standardFontDataUrl: STANDARD_FONT_DATA_URL,
-          disableRange: task.disableRange,
           disableAutoFetch: !task.enableAutoFetch,
           pdfBug: true,
           useSystemFonts: task.useSystemFonts,
           useWorkerFetch: task.useWorkerFetch,
           enableXfa: task.enableXfa,
+          isOffscreenCanvasSupported,
           styleElement: xfaStyleElement,
         });
-        loadingTask.promise.then(
+        let promise = loadingTask.promise;
+
+        if (task.annotationStorage) {
+          for (const annotation of Object.values(task.annotationStorage)) {
+            const { bitmapName } = annotation;
+            if (bitmapName) {
+              promise = promise.then(async doc => {
+                const response = await fetch(
+                  new URL(`./images/${bitmapName}`, window.location)
+                );
+                const blob = await response.blob();
+                if (bitmapName.endsWith(".svg")) {
+                  const image = new Image();
+                  const url = URL.createObjectURL(blob);
+                  const imagePromise = new Promise((resolve, reject) => {
+                    image.onload = () => {
+                      const canvas = new OffscreenCanvas(
+                        image.width,
+                        image.height
+                      );
+                      const ctx = canvas.getContext("2d");
+                      ctx.drawImage(image, 0, 0);
+                      annotation.bitmap = canvas.transferToImageBitmap();
+                      URL.revokeObjectURL(url);
+                      resolve();
+                    };
+                    image.onerror = reject;
+                  });
+                  image.src = url;
+                  await imagePromise;
+                } else {
+                  annotation.bitmap = await createImageBitmap(blob);
+                }
+
+                return doc;
+              });
+            }
+          }
+        }
+
+        if (task.save) {
+          promise = promise.then(async doc => {
+            if (!task.annotationStorage) {
+              throw new Error("Missing `annotationStorage` entry.");
+            }
+            doc.annotationStorage.setAll(task.annotationStorage);
+
+            const data = await doc.saveDocument();
+            await loadingTask.destroy();
+            delete task.annotationStorage;
+
+            return getDocument(data).promise;
+          });
+        }
+
+        promise.then(
           async doc => {
             if (task.enableXfa) {
               task.fontRules = "";
@@ -556,11 +629,7 @@ class Driver {
     if (!task.pdfDoc) {
       return task.firstPage || 1;
     }
-    let lastPageNumber = task.lastPage || 0;
-    if (!lastPageNumber || lastPageNumber > task.pdfDoc.numPages) {
-      lastPageNumber = task.pdfDoc.numPages;
-    }
-    return lastPageNumber;
+    return task.lastPage || task.pdfDoc.numPages;
   }
 
   _nextPage(task, loadError) {
@@ -613,6 +682,9 @@ class Driver {
             let viewport = page.getViewport({
               scale: PixelsPerInch.PDF_TO_CSS_UNITS,
             });
+            if (task.rotation) {
+              viewport = viewport.clone({ rotation: task.rotation });
+            }
             // Restrict the test from creating a canvas that is too big.
             const MAX_CANVAS_PIXEL_DIMENSION = 4096;
             const largestDimension = Math.max(viewport.width, viewport.height);
@@ -648,11 +720,7 @@ class Driver {
               pageColors = null;
 
             if (task.annotationStorage) {
-              const entries = Object.entries(task.annotationStorage),
-                docAnnotationStorage = task.pdfDoc.annotationStorage;
-              for (const [key, value] of entries) {
-                docAnnotationStorage.setValue(key, value);
-              }
+              task.pdfDoc.annotationStorage.setAll(task.annotationStorage);
             }
 
             let textLayerCanvas, annotationLayerCanvas, annotationLayerContext;
@@ -674,18 +742,17 @@ class Driver {
                 textLayerCanvas.height
               );
               textLayerContext.scale(outputScale, outputScale);
-              const enhanceText = !!task.enhance;
               // The text builder will draw its content on the test canvas
               initPromise = page
                 .getTextContent({
                   includeMarkedContent: true,
+                  disableNormalization: true,
                 })
                 .then(function (textContent) {
                   return Rasterize.textLayer(
                     textLayerContext,
                     viewport,
-                    textContent,
-                    enhanceText
+                    textContent
                   );
                 });
             } else {
@@ -780,7 +847,7 @@ class Driver {
               this._snapshot(task, error);
             };
             initPromise
-              .then(function (data) {
+              .then(data => {
                 const renderTask = page.render(renderContext);
 
                 if (task.renderTaskOnContinue) {
@@ -789,7 +856,7 @@ class Driver {
                     setTimeout(cont, RENDER_TASK_ON_CONTINUE_DELAY);
                   };
                 }
-                return renderTask.promise.then(function () {
+                return renderTask.promise.then(() => {
                   if (annotationCanvasMap) {
                     Rasterize.annotationLayer(
                       annotationLayerContext,
@@ -799,7 +866,8 @@ class Driver {
                       annotationCanvasMap,
                       page,
                       IMAGE_RESOURCES_PATH,
-                      renderForms
+                      renderForms,
+                      this._l10n
                     ).then(() => {
                       completeRender(false);
                     });
@@ -907,7 +975,7 @@ class Driver {
   }
 
   _send(url, message) {
-    const capability = createPromiseCapability();
+    const capability = new PromiseCapability();
     this.inflight.textContent = this.inFlightRequests++;
 
     fetch(url, {
@@ -938,3 +1006,5 @@ class Driver {
     return capability.promise;
   }
 }
+
+export { Driver };
